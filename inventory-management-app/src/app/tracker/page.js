@@ -1,9 +1,11 @@
 'use client';
 
 import { useState, useEffect } from 'react';
-import { Box, Typography, Button, Modal, TextField, Stack } from '@mui/material';
+import { Container, Box, Typography, Button, Modal, TextField, Stack, ToggleButton, ToggleButtonGroup } from '@mui/material';
 import { firestore } from '../../firebase'; // Adjust the import path if necessary
 import { collection, doc, getDocs, setDoc, deleteDoc, getDoc } from 'firebase/firestore';
+import axios from 'axios';
+import { getStorage, ref, uploadBytes, getDownloadURL } from "firebase/storage";
 
 const modalStyle = {
   position: 'absolute',
@@ -11,21 +13,24 @@ const modalStyle = {
   left: '50%',
   transform: 'translate(-50%, -50%)',
   width: 400,
-  bgcolor: '#ffffff', // Solid white background
-  border: '2px solid #99181d', // Red border for consistency
+  bgcolor: '#ffffff',
+  border: '2px solid #99181d',
   boxShadow: '0 4px 12px rgba(0, 0, 0, 0.1)',
   p: 4,
   display: 'flex',
   flexDirection: 'column',
   gap: 3,
-  borderRadius: '15px', // Rounded corners to match the landing page
+  borderRadius: '15px',
 };
 
 export default function Tracker() {
   const [inventory, setInventory] = useState([]);
   const [open, setOpen] = useState(false);
+  const [inputMethod, setInputMethod] = useState('text');
   const [itemName, setItemName] = useState('');
   const [searchTerm, setSearchTerm] = useState('');
+  const [uploading, setUploading] = useState(false);
+  const [detectedItems, setDetectedItems] = useState(null);
 
   const updateInventory = async () => {
     try {
@@ -44,22 +49,62 @@ export default function Tracker() {
     updateInventory();
   }, []);
 
-  const addItem = async (item) => {
-    if (!item.trim()) return;
+  const addItem = async () => {
+    if (inputMethod === 'text') {
+      if (!itemName.trim()) return;
 
-    try {
-      const docRef = doc(collection(firestore, 'inventory'), item);
-      const docSnap = await getDoc(docRef);
-      if (docSnap.exists()) {
-        const { quantity } = docSnap.data();
-        await setDoc(docRef, { quantity: quantity + 1 });
-      } else {
-        await setDoc(docRef, { quantity: 1 });
+      try {
+        const docRef = doc(collection(firestore, 'inventory'), itemName);
+        const docSnap = await getDoc(docRef);
+        if (docSnap.exists()) {
+          const { quantity } = docSnap.data();
+          await setDoc(docRef, { quantity: quantity + 1 });
+        } else {
+          await setDoc(docRef, { quantity: 1 });
+        }
+        await updateInventory();
+      } catch (error) {
+        console.error("Error adding item: ", error);
       }
-      await updateInventory();
-    } catch (error) {
-      console.error("Error adding item: ", error);
+    } else if (inputMethod === 'image') {
+      const file = itemName; // itemName is being used to store the file for simplicity
+      if (file) {
+        setUploading(true);
+        const storage = getStorage();
+        const storageRef = ref(storage, `images/${file.name}`);
+        
+        try {
+          // Upload file to Firebase Storage
+          await uploadBytes(storageRef, file);
+          const downloadURL = await getDownloadURL(storageRef);
+
+          // Call your backend to process the image
+          const response = await axios.post('/api/vision', { imageUrl: downloadURL });
+          const detectedItems = response.data.detectedItems;
+
+          // Update the inventory with detected items
+          detectedItems.forEach(async (item) => {
+            const docRef = doc(collection(firestore, 'inventory'), item.name);
+            const docSnap = await getDoc(docRef);
+            if (docSnap.exists()) {
+              const { quantity } = docSnap.data();
+              await setDoc(docRef, { quantity: quantity + item.quantity });
+            } else {
+              await setDoc(docRef, { quantity: item.quantity });
+            }
+          });
+
+          setDetectedItems(detectedItems);
+          await updateInventory();
+        } catch (error) {
+          console.error("Error uploading image and updating inventory:", error);
+        } finally {
+          setUploading(false);
+        }
+      }
     }
+
+    handleClose(); // Close modal after adding item
   };
 
   const removeItem = async (item) => {
@@ -81,16 +126,26 @@ export default function Tracker() {
   };
 
   const handleOpen = () => setOpen(true);
-  const handleClose = () => setOpen(false);
+  const handleClose = () => {
+    setItemName('');
+    setOpen(false);
+  };
+
+  const handleInputChange = (event) => {
+    if (inputMethod === 'text') {
+      setItemName(event.target.value);
+    } else if (inputMethod === 'image') {
+      setItemName(event.target.files[0]); // store file object
+    }
+  };
 
   const filteredInventory = inventory.filter(item =>
     item.name.toLowerCase().includes(searchTerm.toLowerCase())
   );
-
   return (
     <Box
       sx={{
-        background: "linear-gradient(135deg, #e6edf2, #f9d2d2)", // Subtle red gradient background
+        background: "linear-gradient(135deg, #e6edf2, #f9d2d2)",
         minHeight: "100vh",
         display: "flex",
         flexDirection: "column",
@@ -109,16 +164,36 @@ export default function Tracker() {
           <Typography id="modal-modal-title" variant="h6" component="h2" sx={{ fontFamily: "'Lato', Arial, sans-serif" }}>
             Add Item
           </Typography>
-          <Stack width="100%" direction="row" spacing={2}>
-            <TextField
-              id="outlined-basic"
-              label="Item"
-              variant="outlined"
-              fullWidth
-              value={itemName}
-              onChange={(e) => setItemName(e.target.value)}
-              sx={{ fontFamily: "'Lato', Arial, sans-serif" }}
-            />
+          <Stack width="100%" direction="column" spacing={2}>
+            <ToggleButtonGroup
+              color="primary"
+              value={inputMethod}
+              exclusive
+              onChange={(e, newMethod) => setInputMethod(newMethod || 'text')}
+              aria-label="input method"
+            >
+              <ToggleButton value="text">Text Input</ToggleButton>
+              <ToggleButton value="image">Image Upload</ToggleButton>
+            </ToggleButtonGroup>
+  
+            {inputMethod === 'text' ? (
+              <TextField
+                id="outlined-basic"
+                label="Item"
+                variant="outlined"
+                fullWidth
+                value={itemName}
+                onChange={handleInputChange}
+                sx={{ fontFamily: "'Lato', Arial, sans-serif" }}
+              />
+            ) : (
+              <input 
+                type="file" 
+                accept="image/*" 
+                onChange={handleInputChange}
+                sx={{ fontFamily: "'Lato', Arial, sans-serif" }}
+              />
+            )}
             <Button
               variant="outlined"
               sx={{ 
@@ -130,11 +205,7 @@ export default function Tracker() {
                   color: "#db4d52" 
                 } 
               }}
-              onClick={() => {
-                addItem(itemName);
-                setItemName('');
-                handleClose();
-              }}
+              onClick={addItem}
             >
               Add
             </Button>
@@ -165,13 +236,13 @@ export default function Tracker() {
       />
       <Box
         sx={{
-          border: "1px solid #99181d", // Red border
-          borderRadius: "15px", // Rounded corners
-          boxShadow: '0 4px 12px rgba(0, 0, 0, 0.1)', // Shadow for box
-          overflow: "hidden", // Ensure content does not overflow
-          width: "90%", // Set to 90% of the screen width
-          maxWidth: "800px", // Maximum width
-          mt: 3, // Margin top for spacing
+          border: "1px solid #99181d",
+          borderRadius: "15px",
+          boxShadow: '0 4px 12px rgba(0, 0, 0, 0.1)',
+          overflow: "hidden",
+          width: "90%",
+          maxWidth: "800px",
+          mt: 3,
         }}
       >
         <Box
@@ -226,4 +297,4 @@ export default function Tracker() {
       </Box>
     </Box>
   );
-}
+} 

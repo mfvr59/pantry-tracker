@@ -6,6 +6,7 @@ import { Container, Typography, Box, Button, Stack } from "@mui/material";
 import { FaGithub, FaInstagram, FaLinkedin } from 'react-icons/fa';
 import "./globals.css"; 
 
+
 const emojis = ['🍎', '🍇', '🍓', '🍍', '🍌', '🥭', '🍒', '🍉', '🍑'];
 
 export default function LandingPage() {
